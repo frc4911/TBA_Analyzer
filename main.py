@@ -9,14 +9,17 @@ parameters = {"X-TBA-Auth-Key": "OazegQCZzJBXjtEqb8Weqb6VgzQ8VPINCNfm8pGyjVbSSXR
 # state values for controlling database activity
 dbmakenew    = 1   # create a new database
 dberase      = 1   # drop all tables in database
-dbinsertdata = 1   # fill the database with useful information
+dbinsertteams    = 1  # load info on all teams
+dbinsertrankings = 1  # load ranking information on all teams
+dbinsertcomps    = 1  # load competition information on teams in eventname
+dbinsertdata     = 1   # fill the database with useful information
 
 # what information to retrieve
-eventname = "2018pncmp"
+eventname = "2018cmptx"
 eventyear = "2018"
 
 # database information
-dbfile = '2018pncmpdb'
+dbfile = '2018cmptxdb'
 
 # create and/or open database file ================================
 conn = sqlite3.connect(dbfile)
@@ -55,7 +58,11 @@ if dbmakenew == 1:
 									teamcity TEXT,
 									teamstate TEXT,
 									teamctry TEXT,
-									teamweb TEXT
+									teamweb TEXT,
+									district TEXT,
+									districtname TEXT,
+									districtpointstotal INTEGER,
+									districtrank INTEGER
 								)'''
 	sql_create_teamcomps_table = '''CREATE TABLE IF NOT EXISTS teamcomps(
 										compkey TEXT,
@@ -137,7 +144,7 @@ if dbmakenew == 1:
 	print("Database Tables created")
 
 # Add database information =============================================
-if dbinsertdata == 1:
+if dbinsertteams == 1:
 	# load competition information
 	compdata = requests.get('https://www.thebluealliance.com/api/v3/events/2018/simple', params=parameters)  # type of response is requests.models.Response
 	# convert data to list format using built-in json method
@@ -156,70 +163,120 @@ if dbinsertdata == 1:
 		conn.commit()
 	print('Competitions entered for', eventyear)
 	
-	# query TBA for team list for the event
-	teamdata = requests.get('https://www.thebluealliance.com/api/v3/event/' + eventname + '/teams', params=parameters)  # type of response is requests.models.Response
-	# convert data to list format using built-in json method
-	teamlist = teamdata.json()
-	# pull out data for each team
-	for team in teamlist:
-		teamnum   = team["team_number"]
-		teamkey   = team["key"]
-		teamnick  = team["nickname"]
-		teamryear = team["rookie_year"]
-		teamcity  = team["city"]
-		teamstate = team["state_prov"]
-		teamctry  = team["country"]
-		teamweb   = team["website"]
-		
-		print('Entering data for', str(teamnum), teamnick)
-		sqldata = (teamkey, teamnum, teamnick, teamryear, teamcity, teamstate, teamctry, teamweb)
-		sql = '''INSERT INTO teams VALUES(?, ?, ?, ?, ?, ?, ?, ?)'''
-		cursor.execute(sql, sqldata)
-		conn.commit()
-		# visual verification that the team was added
-		print('     Team information entered')
-		
+	# load information on all teams - 14 pages of it this year
+	for x in range(0,15):
+		teamdata = requests.get('https://www.thebluealliance.com/api/v3/teams/' + eventyear + '/' + str(x), params=parameters)
+		# convert data to list format using built-in json method
+		teamlist = teamdata.json()
+		# pull out data for each team
+		for team in teamlist:
+			teamnum   = team["team_number"]
+			teamkey   = team["key"]
+			teamnick  = team["nickname"]
+			teamryear = team["rookie_year"]
+			teamcity  = team["city"]
+			teamstate = team["state_prov"]
+			teamctry  = team["country"]
+			teamweb   = team["website"]
+			
+			print('Entering data for', str(teamnum), teamnick)
+			sqldata = (teamkey, teamnum, teamnick, teamryear, teamcity, teamstate, teamctry, teamweb)
+			sql = '''INSERT INTO teams(teamkey, teamnum, teamnick, teamryear, teamcity, teamstate, teamctry, teamweb) VALUES(?, ?, ?, ?, ?, ?, ?, ?)'''
+			cursor.execute(sql, sqldata)
+			conn.commit()
+		print('      Teams loaded for page ' + str(x))
+	print('Finished loading data for all teams  ===========================')
+
+# Load ranking information for all teams by district
+if dbinsertrankings == 1:
+	print('Loading ranking data for all teams')
+	# load district ranking information into teams table
+	# first, get list of district keys
+	districtdata = requests.get('https://www.thebluealliance.com/api/v3/districts/' + eventyear, params=parameters)
+	districtlist = districtdata.json()
+	for district in districtlist:
+		districtkey = district["key"]
+		tdistrict = district["abbreviation"]
+		tdistrictname = district["display_name"]
+		districtrankingdata = requests.get('https://www.thebluealliance.com/api/v3/district/' + districtkey + '/rankings', params=parameters)
+		districtrankinglist = districtrankingdata.json()
+		for rankings in districtrankinglist:
+			tdistrictpointstotal = rankings["point_total"]
+			tdistrictrank = rankings["rank"]
+			tteamkey = rankings["team_key"]
+			sql = '''UPDATE teams SET district=?, districtname=?, districtpointstotal=?, districtrank=? WHERE teamkey = ?'''
+			cursor.execute(sql, (tdistrict, tdistrictname, tdistrictpointstotal, tdistrictrank, tteamkey))
+			conn.commit()
+	# visual verification that the team was added
+	print('Done entering team ranking data ===========================')
+	# done entering team information
+
+# Enter team competition data
+if dbinsertcomps == 1:
+	print('Loading competition data for teams at ' + eventname)
+	# now load competition information just for the teams at the event
+	compteamsdata = requests.get('https://www.thebluealliance.com/api/v3/event/' + eventname + '/teams', params=parameters)
+	compteamslist = compteamsdata.json()
+	for team in compteamslist:
+		teamkey = team["key"]
 		# load team competition information
+		print('    Loading competitions for ' + teamkey)
 		teamcompdata = requests.get('https://www.thebluealliance.com/api/v3/team/' + teamkey + '/events/' + eventyear + '/statuses', params=parameters)  # type of response is requests.models.Response
 		# convert data to dict format using built-in json method
 		teamcompdict = teamcompdata.json()
 		tckeys = teamcompdict.keys()
 		for compkey in tckeys:
+			print('     processing competition ' + compkey)
 			comp = teamcompdict[compkey]
 			if comp is not None:
-				# check for playoff data first
-				if comp["playoff_status_str"] != "--":
-					alliancenum      = comp["alliance"]["number"]
-					alliancepicknum  = comp["alliance"]["pick"]
-					alliancestr      = comp["alliance_status_str"]
-					highestlevel     = comp["playoff"]["level"]
-					highestlevelwins = comp["playoff"]["record"]["wins"]
-				else:
-					alliancenum     = 0
-					alliancepicknum = 0
-					alliancestr     = "Team " + teamkey + " was not selected for playoffs"
-					highestlevel    = "qm"
-					highestlevelwins = 0
-				qualwins   = comp["qual"]["ranking"]["record"]["wins"]
-				quallosses = comp["qual"]["ranking"]["record"]["losses"]
-				qualties   = comp["qual"]["ranking"]["record"]["ties"]
-				qualdqs    = comp["qual"]["ranking"]["dq"]
-				qualrank   = comp["qual"]["ranking"]["rank"]
-				qualrankscore   = comp["qual"]["ranking"]["sort_orders"][0]
-				qualclimbpoints = comp["qual"]["ranking"]["sort_orders"][1]
-				qualautopoints  = comp["qual"]["ranking"]["sort_orders"][2]
-				qualownpoints   = comp["qual"]["ranking"]["sort_orders"][3]
-				qualvaultpoints = comp["qual"]["ranking"]["sort_orders"][4]
-				qualstatus      = comp["qual"]["status"]
+				if comp["qual"] is not None:
+					# check for playoff data first
+					if comp["playoff_status_str"] != "--":
+						alliancenum      = comp["alliance"]["number"]
+						alliancepicknum  = comp["alliance"]["pick"]
+						alliancestr      = comp["alliance_status_str"]
+						highestlevel     = comp["playoff"]["level"]
+						highestlevelwins = comp["playoff"]["record"]["wins"]
+					else:
+						alliancenum     = 0
+						alliancepicknum = 0
+						alliancestr     = "Team " + teamkey + " was not selected for playoffs"
+						highestlevel    = "qm"
+						highestlevelwins = 0
+					qualwins   = comp["qual"]["ranking"]["record"]["wins"]
+					quallosses = comp["qual"]["ranking"]["record"]["losses"]
+					qualties   = comp["qual"]["ranking"]["record"]["ties"]
+					qualdqs    = comp["qual"]["ranking"]["dq"]
+					qualrank   = comp["qual"]["ranking"]["rank"]
+					qualrankscore   = comp["qual"]["ranking"]["sort_orders"][0]
+					qualclimbpoints = comp["qual"]["ranking"]["sort_orders"][1]
+					qualautopoints  = comp["qual"]["ranking"]["sort_orders"][2]
+					qualownpoints   = comp["qual"]["ranking"]["sort_orders"][3]
+					qualvaultpoints = comp["qual"]["ranking"]["sort_orders"][4]
+					qualstatus      = comp["qual"]["status"]
 			
-				sqldata = (compkey, teamkey, alliancenum, alliancepicknum, alliancestr, highestlevel, highestlevelwins, qualwins, quallosses, qualties, qualdqs, qualrank, qualrankscore, qualclimbpoints, qualautopoints, qualownpoints, qualvaultpoints, qualstatus)
-				sql = '''INSERT INTO teamcomps VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
-				cursor.execute(sql, sqldata)
-				conn.commit()
+					sqldata = (compkey, teamkey, alliancenum, alliancepicknum, alliancestr, highestlevel, highestlevelwins, qualwins, quallosses, qualties, qualdqs, qualrank, qualrankscore, qualclimbpoints, qualautopoints, qualownpoints, qualvaultpoints, qualstatus)
+					sql = '''INSERT INTO teamcomps VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+					cursor.execute(sql, sqldata)
+					conn.commit()
+				else:
+					print('    competition has not started yet')
 			else:
-				print("Skipped competition " + compkey + " - no data yet")
+				print("    competition has no data yet")
 		# verification that the teamcomp data was added
-		print('     Team Competition data entered')
+		print('    competition data entered')
+	print('Done entering team competition data ===========================')
+
+# Enter team match data
+if dbinsertdata == 1:
+	print('Loading match data for all teams at ' + eventname)
+	# now load match information just for the teams at the event
+	compteamsdata = requests.get('https://www.thebluealliance.com/api/v3/event/' + eventname + '/teams', params=parameters)
+	compteamslist = compteamsdata.json()
+	for team in compteamslist:
+		teamkey = team["key"]
+		# load team competition information
+		print('     Loading match data for ' + teamkey)
 
 		# add match data for each team =======================================================
 		teammatches = requests.get('https://www.thebluealliance.com/api/v3/team/' + teamkey + '/matches/' + eventyear, params=parameters)  # type of response is requests.models.Response
@@ -296,7 +353,6 @@ if dbinsertdata == 1:
 					sql = '''INSERT INTO matches VALUES (?, ?, ?, ?, ?, ?, ?)'''
 					cursor.execute(sql, sqldata)
 					conn.commit()
-					print("      Match information entered")
 				
 					# insert team/match data into database
 					if winner == "red":
@@ -313,7 +369,6 @@ if dbinsertdata == 1:
 								(matchblue3, matchkey, "blue", 3, bautorobot2, bendgamerobot2, bluewin)]
 					sql ='''INSERT INTO teammatches VALUES(?, ?, ?, ?, ?, ?, ?)'''
 					cursor.executemany(sql, sqldata)
-					print("     Team/match information entered")
 				
 					# insert match alliance data into database
 					sqldata = (matchkey, "red", rautopoints, rautorankpoints, rautoscaleownsecs, rautoswitchownsecs, rendgamepoints, rftbrankpoint, rfoulcount, rfoulpoints, rrankingpoints, rteleownpoints, rtelepoints, rtelescaleownsecs, rteleswitchownsecs, rvaultpoints)
@@ -323,9 +378,14 @@ if dbinsertdata == 1:
 					sql = '''INSERT INTO matchalliances VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
 					cursor.execute(sql, sqldata)
 					conn.commit()
-					print("      Match/alliance information entered")
+					print('      Match data entered')
+				else:
+					print('    Match ' + matchkey + ' has not occurred yet')
 			else:
-				print("skipped match " + matchkey + " - already in database")
-	print("Finished processing team " + teamkey)
+				print('skipped match ' + matchkey + ' - already in database')
+		print('Finished processing team ' + teamkey)
+	print('Finished loading match data ==================================')
+
+# Done with all database work
 conn.close
-print("end")
+print("database closed")
